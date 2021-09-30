@@ -3,7 +3,7 @@ import time
 import os
 import sys
 from pathlib import Path
-from typing import List, Any
+from typing import List, Any, Optional, Dict
 from torch.testing._internal.common_utils import (
     TestCase,
     run_tests,
@@ -26,21 +26,27 @@ BUILD_ENVIRONMENT = os.getenv("BUILD_ENVIRONMENT", "")
 # this list
 ALLOWLISTED_TEST = {
     "test_jit",
+    "test_api",
+    "test_tensorexpr",
+    "test_mobile_nnc",
 }
 
 
-def run_cmd(cmd: List[str]) -> Any:
+def run_cmd(cmd: List[str], env: Optional[Dict[str, str]] = None) -> Any:
     print(f"[gtest runner] {' '.join(cmd)}")
-    proc = subprocess.run(cmd)
+    proc = subprocess.run(cmd, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"Command '{cmd}' failed")
     return proc
 
 
-def run_binary(binary: Path, test_name: str, extra_flags: List[str] = None):
+def run_binary(
+    binary: Path,
+    test_name: str,
+    filter: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+):
     cmd = [str(binary)]
-    if extra_flags is None:
-        extra_flags = []
 
     if TEST_SAVE_XML is not None:
         # Suffix copied from XMLTestRunner.__init__
@@ -50,9 +56,11 @@ def run_binary(binary: Path, test_name: str, extra_flags: List[str] = None):
             Path(TEST_SAVE_XML) / "test.test_gtest" / f"TEST-{test_name}-{suffix}.xml"
         )
         cmd += [f"--gtest_output=xml:{xml_path}"]
-    cmd += extra_flags
 
-    run_cmd(cmd)
+    if filter is not None:
+        cmd += [f"--gtest_filter={filter}"]
+
+    run_cmd(cmd, env=env)
 
 
 class GTest(TestCase):
@@ -60,7 +68,8 @@ class GTest(TestCase):
     This class has methods added to it below for each C++ test in
     build/bin/*test*. Wrapping tests in Python makes it easier to ensure we are
     running tests in a consistent way and have the C++ tests participate in
-    sharding.
+    sharding. This is mostly meant to be used in CI, for local development
+    run the binaries directly.
 
     To add a custom test that does more than just run the test binary, add a
     method to this class named the same as the test binary (or test_<name> if
@@ -74,8 +83,14 @@ class GTest(TestCase):
         if "cuda" in BUILD_ENVIRONMENT:
             run_binary(binary, test_name)
         else:
-            run_binary(binary, test_name, extra_flags=["--gtest_filter=-*CUDA"])
+            run_binary(binary, test_name, filter="-*CUDA")
         run_cmd([sys.executable, str(setup_path), "shutdown"])
+
+    def test_api(self, binary: Path, test_name: str):
+        env = os.environ.copy()
+        env["OMP_NUM_THREADS"] = "2"
+        env["TORCH_CPP_TEST_MNIST_PATH"] = "test/cpp/api/mnist"
+        run_binary(binary, test_name, filter="-IMethodTest.*", env=env)
 
 
 def generate_test_case(existing_case, binary: Path, test_name: str):
